@@ -1,0 +1,296 @@
+#!/usr/bin/env perl
+
+use utf8;
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+use Cwd qw/getcwd/;
+
+use Data::Dumper;
+
+sub parse_svn_info
+{
+	my @lines = @_;
+	
+	my $items = {};
+
+	my ($key, $val);
+
+	foreach my $line (@lines){
+		if($line =~ /^([^:]+): (.+)/){
+			$key = $1;
+			$val = $2;
+
+			$items->{$key} = $val;
+		}
+	}
+
+	return $items;
+
+}
+
+sub svn_info
+{
+	my $work_dir = shift;
+	
+	my $cmd = "LANG=C svn info $work_dir";
+	my $res = `$cmd`;
+	my @lines = split(/[\r\n]/, $res);
+
+	return parse_svn_info(@lines);
+}
+
+sub git_svn_info
+{
+	my $work_dir = shift;
+	
+	my $cmd = "LANG=C git -C $work_dir svn info";
+	my $res = `$cmd`;
+	my @lines = split(/[\r\n]/, $res);
+
+	return parse_svn_info(@lines);
+}
+
+sub split_externals
+{
+	my $line = shift;
+	my $work_dir = shift;
+
+	my $url = "";
+	my $rev = "";
+	my $ext_dir = "";
+
+	if($line =~ /$work_dir([^\s]+?)(@(\d+))?\s+([^\s]+)/){
+		$url = $1;
+		$rev = $3;
+		$ext_dir = $4;
+	}
+
+	return ($url, $rev, $ext_dir);
+}
+
+
+sub git_svn_externals
+{
+	my $work_dir = shift;
+	
+	my $cmd = "LANG=C git -C $work_dir svn show-externals";
+	my $res = `$cmd`;
+	my @lines = split(/[\r\n]/, $res);
+
+	my $line;
+	my $items = {};
+
+	my ($key, $val);
+
+	my $externals = [];
+
+	foreach $line (@lines){
+		printf("%s\n", $line);
+		if($line =~ /^\s*$/){
+			next;
+		}
+
+		if($line =~ /^# (.*\/)$/){
+			$work_dir = $1;
+			next;
+		}
+
+		my ($url, $rev, $ext_dir) = split_externals($line, $work_dir);
+		if($url ne "" && $ext_dir ne ""){
+			$ext_dir = "." . $work_dir . $ext_dir;
+			$ext_dir =~ s/^\.\///;
+
+			my $tmp = "." . $work_dir;
+			$tmp =~ s|/$||;
+
+			my $external = {
+				"cwd" => $tmp,
+				"url" => $url,
+				"rev" => $rev,
+				"ext_dir" => $ext_dir
+			};
+
+			push(@{$externals}, $external);
+		}
+		else{
+			printf("invalid line, '%s'\n", $line);
+			printf("  work_dir, '%s'\n", $work_dir);
+
+			exit(1);
+		}
+
+	}
+
+	return $externals;
+}
+
+sub extract_schema
+{
+	my $url = shift;
+	my $schema = "";
+
+	if($url =~ m|^([^:]+:)//|){
+		$schema = $1;
+	}
+
+	return $schema;
+}
+
+sub extract_schema_host
+{
+	my $url = shift;
+	my $schema_host = "";
+
+	if($url =~ m|^([^:]+:///?([^/]+))/|){
+		$schema_host = $1;
+	}
+
+	#printf("DEBUG : schema_host is '%s'\n", $schema_host);
+	return $schema_host;
+}
+
+sub update_url
+{
+	my $ext_url = shift;
+	my $cwd = shift;
+	my $infos = shift;
+
+	my $repo_root = $infos->{'Repository Root'};
+	my $url = "";
+
+	if($ext_url =~ m|^//|){
+		# bug?
+		my $schema = extract_schema($url);
+		$url = $schema . $repo_root;
+	}
+	elsif($ext_url =~ m|^\^/|){
+		$ext_url =~ s|^\^||;
+		$url = $repo_root . $ext_url;
+	}
+	elsif($ext_url =~ m|^\.\./|){
+		$url = $infos->{'URL'} . "/" . $cwd . "/" . $ext_url;
+		$url =~ s|/./|/|g;
+		$url =~ s|/[^/]+/\.\./|/|g;
+	}
+	elsif($ext_url =~ m|^/[^/]|){
+		my $schema_host = extract_schema_host($infos->{'Repository Root'});
+		$url = $schema_host . $ext_url;
+	}
+	else{
+		#printf("DEBUG : svn_info(%s)\n", $ext_url);
+		my $items = svn_info($ext_url);
+		my $repo_root = $items->{'Repository Root'};
+		$url = $ext_url;
+	}
+
+	return ($url, $repo_root);
+}
+
+sub add_exclude
+{
+	my $ext_dir = shift;
+	open(OUT, ">> .git/info/exclude") or die("$!");
+	print OUT ("%s\n", $ext_dir);
+	close(OUT);
+}
+
+
+sub main
+{
+	my $ret = 0;
+	my $options = {};
+
+	GetOptions(
+		$options,
+		"help",
+		"version",
+		"output=s"
+	);
+
+	my $cmd;
+	my $res;
+
+	my $line;
+	my $lines;
+
+	my $target_dir;
+	foreach $target_dir (@ARGV){
+		printf("target directory : %s\n", $target_dir);
+		my $infos = git_svn_info($target_dir);
+
+		my $exts = git_svn_externals($target_dir);
+
+		#print(Dumper($exts));
+		
+		my $cwd = getcwd();
+		chdir($target_dir);
+
+		foreach my $ext (@{$exts}){
+			my $ext_cwd = $ext->{'cwd'};
+			my $ext_dir = $ext->{'ext_dir'};
+			my $ext_rev = $ext->{'rev'};
+			my $ext_url = $ext->{'url'};
+
+			printf("ext_cwd '%s', ext_dir '%s'\n", $ext_cwd, $ext_dir);
+			my ($url, $repo_root) = update_url($ext_url, $ext_cwd, $infos);
+			printf("url : %s (%s)\n", $url, $ext_url);
+
+			my $ext_info = svn_info($url);
+			my $ext_repo_root = $ext_info->{'Repository Root'};
+			my $ext_rel_url = $ext_info->{'Relative URL'};
+			printf("ext_repo_root : %s\n", $ext_repo_root);
+			printf("ext_rel_url : %s\n", $ext_rel_url);
+
+			# git init
+			add_exclude($ext_dir);
+
+			if(! -e $ext_dir || ! -d $ext_dir){
+				$cmd = "mkdir -p $ext_dir";
+				printf("%s\n", $cmd);
+				$res = `$cmd`;
+			}
+			$cmd = "git -C $ext_dir init";
+			printf("%s\n", $cmd);
+			$lines = `$cmd`;
+
+			$cmd = "git -C $ext_dir commit --allow-empty " .
+				"-m \"first commit\"";
+			printf("%s\n", $cmd);
+			$lines = `$cmd`;
+
+			my $trunk = $ext_rel_url;
+			$trunk =~ s|^\^/||;
+
+			$cmd = "git -C $ext_dir svn init " .
+				"--trunk=$trunk " .
+				"--prefix=svn/ " .
+				"$ext_repo_root";
+			printf("%s\n", $cmd);
+			$res = `$cmd`;
+
+			$cmd = "git -C $ext_dir svn fetch --all";
+			printf("%s\n", $cmd);
+			$res = `$cmd`;
+
+			$cmd = "git -C $ext_dir checkout svn/trunk";
+			printf("%s\n", $cmd);
+			$res = `$cmd`;
+			
+			#$cmd = "git -C $ext_dir checkout -b svn/trunk";
+			$cmd = "git -C $ext_dir checkout -b trunk";
+			printf("%s\n", $cmd);
+			$res = `$cmd`;
+
+			printf("\n");
+		}
+
+		chdir($cwd);
+	}
+
+}
+
+main();
+
