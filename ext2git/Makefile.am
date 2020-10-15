@@ -1,4 +1,4 @@
-bin_SCRIPTS = ext2git
+bin_SCRIPTS = ext2git chksvnrev
 
 TESTS = \
 	00-git-svn-init.sh \

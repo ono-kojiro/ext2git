@@ -1,0 +1,127 @@
+#!/usr/bin/env perl
+
+use utf8;
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+use Cwd qw/getcwd/;
+
+use File::Find;
+
+use Data::Dumper;
+
+sub extract_revision
+{
+	my $line = shift;
+	my $rev = 0;
+	if($line =~ m|\s*git-svn-id: (.+?)@(\d+)\s+([0-9a-f\-]+)|){
+		$rev = $2;
+	}
+
+	return $rev;
+}
+
+
+sub extract_latest_rev
+{
+	my $dirpath = shift;
+	my $rev = 0;
+
+	my $cmd = "git -C $dirpath log -1";
+	my $res = `$cmd`;
+	#printf($res);
+	my @lines = split(/\r?\n/, $res);
+	foreach my $line (@lines){
+		if($line =~ m|git-svn-id|){
+			#printf("LINE : %s\n", $line);
+			$rev = extract_revision($line);
+			#printf("rev : %s\n", $rev);
+		}
+	}
+
+	return $rev;
+}
+
+sub find_git_dirs
+{
+	my $root_dir = shift;
+		
+	my $dirpath;
+	my $gitdirs = [];
+	find(
+		{
+			wanted => sub {
+				$dirpath = $File::Find::name;
+
+				if(-d $dirpath && $dirpath =~ m|/.git$| ){
+					$dirpath =~ s|/.git$||;
+					#printf("%s\n", $dirpath);
+					push(@{$gitdirs}, $dirpath);
+				}
+			},
+			no_chdir => 1
+		},
+		$root_dir
+	);
+
+	return $gitdirs;
+}
+
+sub get_latest_svn_rev
+{
+	my $dirpath = shift;
+	my $rev = -1;
+
+	#printf("%s\n", $dirpath);
+	my $cmd = "git -C $dirpath log -1";
+	my $res = `$cmd`;
+	#printf($res);
+	my @lines = split(/\r?\n/, $res);
+	foreach my $line (@lines){
+		if($line =~ m|git-svn-id|){
+			#printf("LINE : %s\n", $line);
+			$rev = extract_revision($line);
+			#printf("directory %s, rev %s\n", $dirpath, $rev);
+		}
+	}
+
+	return $rev;
+
+}
+
+sub main
+{
+	my $ret = 0;
+	my $options = {};
+
+	GetOptions(
+		$options,
+		"help",
+		"version",
+		"output=s"
+	);
+
+	my $cmd;
+	my $res;
+
+	my $line;
+	my $lines;
+
+	my $target_dir;
+	foreach $target_dir (@ARGV){
+		printf("target directory : %s\n", $target_dir);
+
+		my $git_dirs = find_git_dirs($target_dir);
+
+		foreach my $dirpath (@{$git_dirs}){
+			my $rev = get_latest_svn_rev($dirpath);
+			printf("dir %s, rev %s\n", $dirpath, $rev);
+		}
+	}
+
+}
+
+main();
+
