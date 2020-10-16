@@ -50,6 +50,9 @@ sub find_git_dirs
 		
 	my $dirpath;
 	my $gitdirs = [];
+
+	$root_dir =~ s|[\\/]$||;
+
 	find(
 		{
 			wanted => sub {
@@ -57,7 +60,6 @@ sub find_git_dirs
 
 				if(-d $dirpath && $dirpath =~ m|/.git$| ){
 					$dirpath =~ s|/.git$||;
-					#printf("%s\n", $dirpath);
 					push(@{$gitdirs}, $dirpath);
 				}
 			},
@@ -91,6 +93,80 @@ sub get_latest_svn_rev
 
 }
 
+sub split_externals
+{
+	my $line = shift;
+	my $work_dir = shift;
+
+	my $url = "";
+	my $rev = "";
+	my $ext_dir = "";
+
+	if($line =~ /$work_dir([^\s]+?)(@(\d+))?\s+([^\s]+)/){
+		$url = $1;
+		$rev = int($3);
+		$ext_dir = $4;
+	}
+
+	return ($url, $rev, $ext_dir);
+}
+
+
+sub git_svn_externals
+{
+	my $work_dir = shift;
+	
+	my $cmd = "LANG=C git -C $work_dir svn show-externals";
+	my $res = `$cmd`;
+	my @lines = split(/[\r\n]/, $res);
+
+	my $line;
+	my $items = {};
+
+	my ($key, $val);
+
+	my $exts = {};
+
+	foreach $line (@lines){
+		#printf("%s\n", $line);
+		if($line =~ /^\s*$/){
+			next;
+		}
+
+		if($line =~ /^# (.*\/)$/){
+			$work_dir = $1;
+			next;
+		}
+
+		my ($url, $rev, $ext_dir) = split_externals($line, $work_dir);
+		if($url ne "" && $ext_dir ne ""){
+			$ext_dir = "." . $work_dir . $ext_dir;
+			$ext_dir =~ s/^\.\///;
+
+			my $tmp = "." . $work_dir;
+			$tmp =~ s|/$||;
+
+			my $ext = {
+				"cwd" => $tmp,
+				"url" => $url,
+				"rev" => $rev
+			};
+
+			$exts->{$ext_dir} = $ext;
+		}
+		else{
+			printf("invalid line, '%s'\n", $line);
+			printf("  work_dir, '%s'\n", $work_dir);
+
+			exit(1);
+		}
+
+	}
+
+	return $exts;
+}
+
+
 sub main
 {
 	my $ret = 0;
@@ -116,8 +192,30 @@ sub main
 		my $git_dirs = find_git_dirs($target_dir);
 
 		foreach my $dirpath (@{$git_dirs}){
-			my $rev = get_latest_svn_rev($dirpath);
-			printf("dir %s, rev %s\n", $dirpath, $rev);
+			my $exts = git_svn_externals($target_dir);
+			#printf(Dumper($exts));
+
+			my $got = get_latest_svn_rev($dirpath);
+
+			$dirpath =~ s|^$target_dir||;
+
+			my $expected = $exts->{$dirpath}->{'rev'};
+			my $verdict = '';
+
+			if(!$expected){
+				printf("\$exts->{$dirpath}->{'rev'} is not defined\n");
+			}
+
+			printf("check revision of %s\n", $dirpath);
+			printf("  expected : %s\n", $expected);
+			printf("  got      : %s\n", $got);
+			if($expected == $got){
+				$verdict = "passed";
+			}
+			else{
+				$verdict = "failed";
+			}
+			printf("  verdict : %s\n", $verdict);
 		}
 	}
 
