@@ -8,6 +8,8 @@ use Getopt::Long;
 
 use Cwd qw/getcwd/;
 
+use Git;
+
 use Data::Dumper;
 
 sub parse_svn_info
@@ -197,6 +199,87 @@ sub add_exclude
 	close(OUT);
 }
 
+sub extract_revision
+{
+	my $line = shift;
+	my $rev = 0;
+	if($line =~ m|\s*git-svn-id: (.+?)@(\d+)\s+([0-9a-f\-]+)|){
+		$rev = $2;
+	}
+
+	return $rev;
+}
+
+
+sub extract_latest_rev
+{
+	my $dirpath = shift;
+	my $rev = 0;
+
+	my $cmd = "git -C $dirpath log -1";
+	my $res = `$cmd`;
+	#printf($res);
+	my @lines = split(/\r?\n/, $res);
+	foreach my $line (@lines){
+		if($line =~ m|git-svn-id|){
+			#printf("LINE : %s\n", $line);
+			$rev = extract_revision($line);
+			#printf("rev : %s\n", $rev);
+		}
+	}
+
+	return $rev;
+}
+
+sub get_latest_svn_rev
+{
+	my $dirpath = shift;
+	my $rev = -1;
+
+	#printf("%s\n", $dirpath);
+	my $cmd = "git -C $dirpath log -1";
+	my $res = `$cmd`;
+	#printf($res);
+	my @lines = split(/\r?\n/, $res);
+	foreach my $line (@lines){
+		if($line =~ m|git-svn-id|){
+			#printf("LINE : %s\n", $line);
+			$rev = extract_revision($line);
+			#printf("directory %s, rev %s\n", $dirpath, $rev);
+		}
+	}
+
+	return $rev;
+
+}
+
+sub get_git_svn_commit
+{
+	my $dirpath = shift;
+	my $target_rev     = shift;
+
+	my $commit = '';
+	my $cmd = "git -C $dirpath svn find-rev r$target_rev";
+	$commit = `$cmd`;
+
+	#my $cmd = "git -C $dirpath log";
+	#my $res = `$cmd`;
+	#my @lines = split(/\r?\n/, $res);
+	#foreach my $line (@lines){
+	#	if($line =~ m|^commit ([0-9a-f]+)|){
+	#		$commit = $1;
+	#	}
+	#	elsif($line =~ m|git-svn-id|){
+	#		my $rev = extract_revision($line);
+	#		if($rev == $target_rev){
+	#			last;
+	#		}
+	#	}
+	#}
+
+	return $commit;
+}
+
 
 sub main
 {
@@ -247,44 +330,107 @@ sub main
 			# git init
 			add_exclude($ext_dir);
 
+			my $trunk = $ext_rel_url;
+			$trunk =~ s|^\^/||;
+
 			if(! -e $ext_dir || ! -d $ext_dir){
 				$cmd = "mkdir -p $ext_dir";
 				printf("%s\n", $cmd);
 				$res = `$cmd`;
-			}
-			$cmd = "git -C $ext_dir init";
-			printf("%s\n", $cmd);
-			$lines = `$cmd`;
+				
+				$cmd = "git -C $ext_dir init";
+				printf("%s\n", $cmd);
+				$lines = `$cmd`;
 
-			$cmd = "git -C $ext_dir commit --allow-empty " .
-				"-m \"first commit\"";
-			printf("%s\n", $cmd);
-			$lines = `$cmd`;
+				#$cmd = "git -C $ext_dir commit --allow-empty " .
+				#	"-m \"first commit\"";
+				#printf("%s\n", $cmd);
+				#$lines = `$cmd`;
 
-			my $trunk = $ext_rel_url;
-			$trunk =~ s|^\^/||;
 
-			$cmd = "git -C $ext_dir svn init " .
-				"--trunk=$trunk " .
-				"--prefix=svn/ " .
-				"$ext_repo_root";
-			printf("%s\n", $cmd);
-			$res = `$cmd`;
+				$cmd = "git -C $ext_dir svn init " .
+					"--trunk=$trunk " .
+					"--prefix=svn/ " .
+					"$ext_repo_root";
+				printf("%s\n", $cmd);
+				$res = `$cmd`;
 
-			$cmd = "git -C $ext_dir svn fetch --all";
-			printf("%s\n", $cmd);
-			$res = `$cmd`;
+				$cmd = "git -C $ext_dir svn fetch --all";
+				printf("%s\n", $cmd);
+				$res = `$cmd`;
 
-			$cmd = "git -C $ext_dir checkout svn/trunk";
-			printf("%s\n", $cmd);
-			$res = `$cmd`;
+				$cmd = "git -C $ext_dir checkout svn/trunk";
+				printf("%s\n", $cmd);
+				$res = `$cmd`;
 			
-			#$cmd = "git -C $ext_dir checkout -b svn/trunk";
-			$cmd = "git -C $ext_dir checkout -b trunk";
-			printf("%s\n", $cmd);
-			$res = `$cmd`;
+				$cmd = "git -C $ext_dir checkout -b trunk";
+				printf("%s\n", $cmd);
+				$res = `$cmd`;
 
-			printf("\n");
+				printf("\n");
+
+			}
+			else{
+				printf("directory '$ext_dir' already exists\n");
+				printf("check git-config-l\n");
+				my $repo = Git->repository(
+					Directory => $ext_dir
+				);
+
+				my $revs = $repo->command('config', '-l');
+				my @lines = split(/\r?\n/, $revs);
+				my $configs = {};
+				foreach my $line (@lines){
+					if($line =~ m|([^=]+)=([^=]+)|){
+						$configs->{$1} = $2;
+					}
+				}
+				#printf(Dumper($configs));
+
+				my $url = $configs->{'svn-remote.svn.url'};
+				my $fetch = $configs->{'svn-remote.svn.fetch'};
+
+				if($ext_repo_root ne $url){
+					printf("WARN : svn-remote.svn.url is different\n");
+					printf("  expected : $ext_repo_root\n");
+					printf("  got      : $url\n");
+				}
+				else{
+					printf("INFO: svn-remote.svn.url is same\n");
+				}
+
+				if($fetch ne "$trunk:refs/remotes/svn/trunk"){
+					printf("WARN : svn-remote.svn.fetch is different\n");
+					printf("  expected : $trunk:refs/remotes/svn/trunk\n");
+					printf("  got      : $fetch\n");
+				}
+				else{
+					printf("INFO: svn-remote.svn.fetch is same\n");
+				}
+
+				my $current_rev = get_latest_svn_rev($ext_dir);
+				if($ext_rev != $current_rev){
+					printf("WARN : wrong revision of git-svn repo\n");
+					printf("  expected : %d\n", $ext_rev);
+					printf("  got      : %d\n", $current_rev);
+
+					my $commit = get_git_svn_commit($ext_dir, $ext_rev);
+					if($commit ne ''){
+						printf("  commit for rev $ext_rev found\n");
+						printf("    %s\n", $commit);
+
+						$cmd = "git -C $ext_dir checkout -f $commit";
+						$res = `$cmd`;
+						printf($res);
+					}
+					else{
+						printf("  commit for rev NOT found\n");
+					}
+				}
+				else{
+					printf("INFO: revision of git-svn repo is same\n");
+				}
+			}
 		}
 
 		chdir($cwd);
