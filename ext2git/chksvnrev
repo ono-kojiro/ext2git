@@ -53,14 +53,20 @@ sub find_git_dirs
 
 	$root_dir =~ s|[\\/]$||;
 
+	#printf("DEBUG : root_dir $root_dir\n");
+
 	find(
 		{
 			wanted => sub {
 				$dirpath = $File::Find::name;
-
 				if(-d $dirpath && $dirpath =~ m|/.git$| ){
 					$dirpath =~ s|/.git$||;
-					push(@{$gitdirs}, $dirpath);
+					$dirpath =~ s|$root_dir[\\/]?||;
+
+					#printf("DEBUG : dirpath $dirpath\n");
+					if($root_dir ne $dirpath){
+						push(@{$gitdirs}, $dirpath);
+					}
 				}
 			},
 			no_chdir => 1
@@ -166,6 +172,27 @@ sub git_svn_externals
 	return $exts;
 }
 
+sub git_svn_find_rev
+{
+	my $target_dir = shift;
+	my $rev = shift;
+
+	my $cmd = "git -C $target_dir svn find-rev r$rev";
+	my $commit = `$cmd`;
+
+	return $commit;
+}
+
+sub git_checkout
+{
+	my $work_dir = shift;
+	my $commit = shift;
+
+	my $cmd = "git -C $work_dir checkout $commit";
+	my $res = `$cmd`;
+
+	printf($res);
+}
 
 sub main
 {
@@ -187,17 +214,28 @@ sub main
 
 	my $target_dir;
 	foreach $target_dir (@ARGV){
-		printf("target directory : %s\n", $target_dir);
+		$target_dir =~ s|[\\/]$||;
 
+		#printf("target directory : %s\n", $target_dir);
+
+		printf("INFO : finding git directories... ");
 		my $git_dirs = find_git_dirs($target_dir);
+		printf("done.\n");
+		
+		printf("INFO : get svn:externals...");
+		my $exts = git_svn_externals($target_dir);
+		printf("done.\n");
+		printf(Dumper($exts));
 
 		foreach my $dirpath (@{$git_dirs}){
-			my $exts = git_svn_externals($target_dir);
-			#printf(Dumper($exts));
 
-			my $got = get_latest_svn_rev($dirpath);
+			my $got = get_latest_svn_rev($target_dir . "/" . $dirpath);
 
 			$dirpath =~ s|^$target_dir||;
+
+			if($dirpath eq ""){
+				next;
+			}
 
 			my $expected = $exts->{$dirpath}->{'rev'};
 			my $verdict = '';
@@ -206,16 +244,18 @@ sub main
 				printf("\$exts->{$dirpath}->{'rev'} is not defined\n");
 			}
 
-			printf("check revision of %s\n", $dirpath);
+			printf("check revision of %s/%s\n", $target_dir, $dirpath);
 			printf("  expected : %s\n", $expected);
 			printf("  got      : %s\n", $got);
-			if($expected == $got){
-				$verdict = "passed";
+			if($expected != $got){
+				my $commit = git_svn_find_rev($target_dir . "/" . $dirpath, $expected);
+				printf("  commit of rev %d found, %s\n", $expected, $commit);
+				git_checkout($target_dir . "/" . $dirpath, $commit);
 			}
 			else{
-				$verdict = "failed";
+				$verdict = "passed";
 			}
-			printf("  verdict : %s\n", $verdict);
+			#printf("  verdict : %s\n", $verdict);
 		}
 	}
 
